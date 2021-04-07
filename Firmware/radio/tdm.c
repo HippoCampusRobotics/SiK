@@ -479,7 +479,7 @@ link_update(void)
     
 #ifdef UNLOCK_RESET_SEC
     // Everything is broken :(
-    if (unlock_count > UNLOCK_RESET_SEC) {
+    if (unlock_count > UNLOCK_RESET_SEC && !at_mode_active) {
       // Reset the device using sofware reset
       RSTSRC |= 0x10;
     }
