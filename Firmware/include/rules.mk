@@ -152,7 +152,7 @@ install:	$(PRODUCT_INSTALL)
 	@echo INSTALL $^
 	$(v)mkdir -p $(DSTROOT)
 	$(v)cp $(PRODUCT_INSTALL) $(DSTROOT)/
-	@./tools/check_code.py $^ $(XRAM_SIZE)
+	@$(SRCROOT)tools/check_code.py $^ $(XRAM_SIZE)
 ifeq ($(MODEL_HUGE), 1)
 	@echo ''
 	@echo FINAL ALLOCATION $^

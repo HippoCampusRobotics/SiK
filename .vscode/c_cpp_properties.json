@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/share/sdcc/include"
+            ],
+            "defines": [
+                "__xdata=",
+                "__pdata=",
+                "__data=",
+                "__idata=",
+                "__bit=uint8_t"
+            ],
+            "compilerPath": "/usr/bin/sdcc",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++14",
+            "intelliSenseMode": "linux-gcc-x64",
+            "configurationProvider": "ms-vscode.makefile-tools"
+        }
+    ],
+    "version": 4
+}

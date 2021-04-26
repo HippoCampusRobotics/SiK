@@ -1,0 +1,1 @@
+bool hippolink_rssi_report(uint8_t node_id, uint8_t node_count);

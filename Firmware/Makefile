@@ -42,11 +42,14 @@ ACTIONS		 = build clean install
 # Locate the root of the firmware source tree
 #
 export SRCROOT	 = $(dir $(lastword $(MAKEFILE_LIST)))
+$(info MAKEFILE_LIST="$(MAKEFILE_LIST)")
+$(info SRCROOT=$(SRCROOT))
 
 #
 # Work out which board(s) we know how to support
 #
 KNOWN_BOARDS	 = $(patsubst rules_%.mk,%,$(notdir $(wildcard $(SRCROOT)/include/rules_*.mk)))
+$(info KNOWN_BOARDS="$(KNOWN_BOARDS)")
 
 #
 # Allow the user to subset the boards for which we will build.
@@ -92,7 +95,7 @@ $(TARGETS):	product   = $(word 2, $(config))
 $(TARGETS):	board     = $(word 3, $(config))
 $(TARGETS):
 	@echo % $(action) $(product) for $(board)
-	@make -f $(product)/product.mk $(action) \
+	@make -f $(SRCROOT)$(product)/product.mk $(action) \
 		BOARD=$(board)
 
 .PHONY:	$(ACTIONS) $(TARGETS)

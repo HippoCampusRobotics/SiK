@@ -1,0 +1,6 @@
+{
+    "makefile.makefilePath": "Firmware/Makefile",
+    "files.associations": {
+        "radio.h": "c"
+    }
+}

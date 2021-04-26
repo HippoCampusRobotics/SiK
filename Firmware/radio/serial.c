@@ -35,6 +35,7 @@
 
 #include "serial.h"
 #include "packet.h"
+#include "hippolink.h"
 
 // Serial rx/tx buffers.
 //

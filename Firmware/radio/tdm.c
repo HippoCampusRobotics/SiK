@@ -42,6 +42,7 @@
 #include "golay.h"
 #include "freq_hopping.h"
 #include "crc.h"
+#include "hippolink.h"
 
 /// the state of the tdm system
 enum tdm_state { TDM_TRANSMIT, TDM_RECEIVE, TDM_SYNC };
@@ -566,13 +567,14 @@ void
 tdm_serial_loop(void)
 {
 	__pdata uint16_t last_t = timer2_tick();
+	__pdata uint16_t last_hippolink_rssi_report = last_t;
 	__pdata uint16_t last_link_update = last_t;
 
 	_canary = 42;
 
 	for (;;) {
 		__pdata uint8_t	len;
-		__pdata uint16_t tnow, tdelta;
+		__pdata uint16_t tnow = timer2_tick(), tdelta;
 		__pdata uint8_t max_xmit;
 
 		if (_canary != 42) {
@@ -596,11 +598,9 @@ tdm_serial_loop(void)
 			test_display = 0;
 		}
 
-		if (seen_mavlink && feature_mavlink_framing && !at_mode_active) {
-			seen_mavlink = false;
-			if(MAVLink_report()) {
-				seen_mavlink = 0;
-			}
+		if (tnow - last_hippolink_rssi_report > 6250) {
+			if (hippolink_rssi_report(nodeId, nodeCount))
+				last_hippolink_rssi_report = tnow;
 		}
 
 		// get the time before we check for a packet coming in

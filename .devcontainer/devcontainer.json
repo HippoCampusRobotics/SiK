@@ -1,0 +1,13 @@
+{
+    "name": "sik-dev",
+    "context": ".",
+    "dockerFile": "Dockerfile",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/vscode/SiK,type=bind",
+    "workspaceFolder": "/home/vscode/SiK",
+    "runArgs": [],
+    "remoteUser": "vscode",
+    "extensions": [
+        "ms-vscode.cpptools",
+        
+    ]
+}
