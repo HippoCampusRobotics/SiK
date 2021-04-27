@@ -55,13 +55,17 @@
 /// stats packets are marked with a window of 0
 #define STATS_WINDOW 0
 
+#define IS_STATS_PACKET(window, len) (window == STATS_WINDOW && len != 0)
+
+#define IS_CMD_PACKET(command) (command == 1)
+
 #define RSSI_REPORT_UPDATE_TICKS 12500
 
 /// the state of the tdm system
 enum _tdm_state { TDM_TRANSMIT, TDM_RECEIVE, TDM_SYNC };
 __pdata static enum _tdm_state _tdm_state;
 __pdata static uint16_t
-    _nodeTransmitSeq;  // sequence the nodes can transmit in.
+    _transmitting_node;  // sequence the nodes can transmit in.
 __pdata static uint16_t
     _paramNodeDestination;                 // User defined Packet destination
 __pdata static uint16_t _nodeDestination;  // Real Packet Destination (as some
@@ -169,7 +173,7 @@ __pdata static uint16_t _lbt_rand;
 __pdata uint8_t _test_display;
 
 // Statisics packet recive count
-__pdata uint16_t _statistics_receive_count;
+__pdata uint16_t _received_packets_count;
 // set to 0 when we should send statistics packets
 __pdata uint16_t _statistics_transmit_stats;
 // handle ati5 command, as this is a long and doesn't fit into the buffer
@@ -211,13 +215,13 @@ void tdm_show_rssi(void) {
     }
     printfl(
         "[%u] pkts: %u txe=%u rxe=%u stx=%u srx=%u ecc=%u/%u temp=%d dco=%u\n",
-        (unsigned)nodeId, (unsigned)_statistics_receive_count,
+        (unsigned)nodeId, (unsigned)_received_packets_count,
         (unsigned)errors.tx_errors, (unsigned)errors.rx_errors,
         (unsigned)errors.serial_tx_overflow,
         (unsigned)errors.serial_rx_overflow, (unsigned)errors.corrected_errors,
         (unsigned)errors.corrected_packets, (int)radio_temperature(),
         (unsigned)_duty_cycle_offset);
-    _statistics_receive_count = 0;
+    _received_packets_count = 0;
 }
 
 /// display test output
@@ -253,15 +257,15 @@ static void tdm_state_update(__pdata uint16_t tdelta) {
         // Tickle Watchdog
         PCA0CPH5 = 0;
 #endif  // WATCH_DOG_ENABLE
-        if ((_nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) &&
-            (_nodeTransmitSeq++ % nodeCount) == nodeId) {
+        if ((_transmitting_node < 0x8000 || nodeId == BASE_NODEID) &&
+            (_transmitting_node++ % nodeCount) == nodeId) {
             _tdm_state = TDM_TRANSMIT;
-            _nodeTransmitSeq %= nodeCount;
+            _transmitting_node %= nodeCount;
         }
-        // We need to -1 from _nodeTransmitSeq as it was incremented above
+        // We need to -1 from _transmitting_node as it was incremented above
         // Remember we have incremented nodeCount to allow for the sync period
-        else if (_nodeTransmitSeq < 0x8000 &&
-                 (_nodeTransmitSeq - 1 % nodeCount) == nodeCount - 1) {
+        else if (_transmitting_node < 0x8000 &&
+                 (_transmitting_node - 1 % nodeCount) == nodeCount - 1) {
             _tdm_state = TDM_SYNC;
         } else {
             // Check for Bonus?
@@ -344,13 +348,13 @@ static uint8_t tdm_yield_update(__pdata uint8_t set_yield,
         }
 
         // REMEMBER nodeCount is set one higher than the user has set, this is
-        // to add sync to the sequence _nodeTransmitSeq points to the next slot
-        // so we also have to remove one from here
+        // to add sync to the sequence _transmitting_node points to the next
+        // slot so we also have to remove one from here
         if (set_yield == YIELD_GET) {
-            if ((_nodeTransmitSeq != 0 &&
+            if ((_transmitting_node != 0 &&
                  (_lastTransmitWindow & 0x7FFF) ==
-                     ((_nodeTransmitSeq - 1) % (nodeCount - 1))) ||
-                (_nodeTransmitSeq == 0 &&
+                     ((_transmitting_node - 1) % (nodeCount - 1))) ||
+                (_transmitting_node == 0 &&
                  (_lastTransmitWindow & 0x7FFF) == (nodeCount - 2))) {
                 return YIELD_TRANSMIT;
             } else {
@@ -475,13 +479,13 @@ static void link_update(void) {
         _sync_count = 0;
         RADIO_LED(_blink_state);
         _blink_state = !_blink_state;
-        _nodeTransmitSeq = 0xFFFF;
+        _transmitting_node = 0xFFFF;
 
         memset(remote_statistics, 0, sizeof(remote_statistics));
         memset(statistics, 0, sizeof(statistics));
 
         // reset statistics when unlocked
-        _statistics_receive_count = 0;
+        _received_packets_count = 0;
 
 #ifdef TDM_SYNC_LOGIC
         TDM_SYNC_PIN = false;
@@ -573,6 +577,58 @@ static void handle_at_command(__pdata uint8_t len) {
 #endif  // WATCH_DOG_ENABLE
 }
 
+static void handle_sync_packet() {
+    if (_transmitting_node == BASE_NODEID) {
+        if (!(++_sync_count)) {
+            _sync_count = 0xFF;
+        }
+    }
+    _transmitting_node = BASE_NODEID;
+    set_transmit_channel(REMOVE_SYNC_BIT(_trailer.nodeid));
+    _received_sync = true;
+}
+
+static void handle_anysync_packet() {
+    if (_transmitting_node == _trailer.nodeid + 1) {
+        if (!(++_sync_count)) {
+            _sync_count = 0xFF;
+        }
+        _transmitting_node = _trailer.nodeid + 1;
+        _received_sync = true;
+    }
+}
+
+static void handle_stats_packet(uint8_t len) {
+    if ((_trailer.nodeid < MAX_NODE_RSSI_STATS) &&
+        len ==
+            (sizeof(struct statistics) + sizeof(_statistics_transmit_stats))) {
+        len -= sizeof(_statistics_transmit_stats);
+
+        // is the stats packet for us?
+        if (((uint16_t *)(_pbuf + len))[0] == nodeId)
+            memcpy(remote_statistics + _trailer.nodeid, _pbuf, len);
+    }
+}
+
+static void handle_non_stats_packet(uint8_t len) {
+    _tdm_state = _trailer.window;
+#if USE_TICK_YIELD
+    // 0 length package means someone wants to yield his remaining
+    // transmission time.
+    tdm_yield_update(YIELD_SET, len == 0);
+#endif  // USE_TICK_YIELD
+    if (IS_CMD_PACKET(_trailer.command)) {
+        if (len > 1) {
+            handle_at_command(len);
+        }
+    } else if (len != 0 && !packet_is_duplicate(len, _pbuf, _trailer.resend) &&
+               !at_mode_active) {
+        ACTIVITY_LED(LED_ON);
+        serial_write_buf(_pbuf, len);
+        ACTIVITY_LED(LED_OFF);
+    }
+}
+
 /**
  * @brief Handles a received radio packet.
  *
@@ -581,7 +637,7 @@ static void handle_at_command(__pdata uint8_t len) {
  * the current tdm state will be updated according to the packets window data
  * in the _trailer.
  */
-bool handle_received_packet(register uint8_t len) {
+static bool handle_received_packet(register uint8_t len) {
     bool ret = false;
     _transmit_wait = 0;
     if (len < sizeof(_trailer)) {
@@ -603,57 +659,26 @@ bool handle_received_packet(register uint8_t len) {
     len -= sizeof(_trailer);
 
     if (IS_SYNC(_trailer.nodeid)) {
-        if (_sync_count < 0xFF && _nodeTransmitSeq == 0) {
-            _sync_count++;
-        }
-        _nodeTransmitSeq = 0;
-        set_transmit_channel(REMOVE_SYNC_BIT(_trailer.nodeid));
-        _received_sync = true;
+        handle_sync_packet();
         return false;
     } else if (_sync_any && !_trailer.bonus) {
-        if (_sync_count < 0xFF && _nodeTransmitSeq == _trailer.nodeid + 1)
-            _sync_count++;
-        _nodeTransmitSeq = _trailer.nodeid + 1;
-        _received_sync = true;
+        handle_anysync_packet();
     }
 
     if (_trailer.nodeid < MAX_NODE_RSSI_STATS)
         statistics[_trailer.nodeid].average_rssi =
             (radio_last_rssi() +
              7 * (uint16_t)statistics[_trailer.nodeid].average_rssi / 8);
-    _statistics_receive_count++;
-    if (_trailer.window == STATS_WINDOW && len != 0) {
-        if (len == (sizeof(struct statistics) +
-                    sizeof(_statistics_transmit_stats)) &&
-            _trailer.nodeid < MAX_NODE_RSSI_STATS) {
-            len -= sizeof(_statistics_transmit_stats);
-            if (((uint16_t *)(_pbuf + len))[0] == nodeId)
-                memcpy(remote_statistics + _trailer.nodeid, _pbuf, len);
-        }
+    _received_packets_count++;
+
+    if (IS_STATS_PACKET(_trailer.window, len)) {
+        handle_stats_packet(len);
         // don't count control packets in the stats
-        _statistics_receive_count--;
+        _received_packets_count--;
     } else if (_trailer.window != STATS_WINDOW) {
         // we've got some real message data!
-        _tdm_state_remaining = _trailer.window;
-#if USE_TICK_YIELD
-        // 0 length package means someone wants to yield his remaining
-        // transmission time.
-        tdm_yield_update(YIELD_SET, len == 0);
-#endif  // USE_TICK_YIELD
-
+        handle_non_stats_packet(len);
         ret = true;
-
-        if (_trailer.command == 1) {
-            if (len > 1)
-                handle_at_command(len);
-            else if (len != 0 &&
-                     !packet_is_duplicate(len, _pbuf, _trailer.resend) &&
-                     !at_mode_active) {
-                ACTIVITY_LED(LED_ON);
-                serial_write_buf(_pbuf, len);
-                ACTIVITY_LED(LED_OFF);
-            }
-        }
     }
     return ret;
 }
@@ -775,7 +800,9 @@ void tdm_serial_loop(void) {
 
         // see if we have received a packet
         if (radio_receive_packet(&len, _pbuf)) {
-            if (handle_received_packet(len)) last_t = tnow;
+            if (handle_received_packet(len)) {
+                last_t = tnow;
+            }
             continue;
         }
 
@@ -799,11 +826,13 @@ void tdm_serial_loop(void) {
             last_link_update = tnow;
         }
 
-        if (still_doing_lbt(tdelta)) continue;
+        if (still_doing_lbt(tdelta)) {
+            continue;
+        }
 
-            // we are allowed to transmit in our transmit window
-            // or in the other radios transmit window if we have
-            // bonus ticks
+        // we are allowed to transmit in our transmit window
+        // or in the other radios transmit window if we have
+        // bonus ticks
 #if USE_TICK_YIELD
         if (tdm_yield_update(YIELD_GET, YIELD_NO_DATA) == YIELD_RECEIVE) {
 #ifdef DEBUG_PINS_TRANSMIT_RECEIVE
@@ -1088,6 +1117,7 @@ void tdm_init(void) {
     // adjust later based on actual preamble length. This is done
     // so that if one radio has antenna diversity and the other
     // doesn't, then they will both using the same TDM round timings
+    // 8 bytes header 5 bytes preamble and 13 ticks response time for the radio
     _packet_latency = (8 + (10 / 2)) * _ticks_per_byte + 13;
 
     if (feature_golay) {
@@ -1151,7 +1181,7 @@ void tdm_init(void) {
 
     // Clear Values..
     _trailer.nodeid = 0xFFFF;
-    _nodeTransmitSeq = 0xFFFF;
+    _transmitting_node = 0xFFFF;
     memset(remote_statistics, 0, sizeof(remote_statistics));
     memset(statistics, 0, sizeof(statistics));
 
