@@ -35,7 +35,6 @@
 /// XXX this may no longer be the case - it may be sufficient for the interrupt vectors
 /// to be located in the same file as main()
 ///
-
 #include <stdarg.h>
 #include "radio.h"
 #include "tdm.h"
@@ -310,6 +309,8 @@ radio_init(void) __nonbanked
 	__pdata uint32_t freq_min, freq_max;
 	__pdata uint32_t channel_spacing;
 	__pdata uint8_t txpower;
+	__pdata uint8_t lbt_rssi;
+	__pdata uint8_t duty_cycle;
 	
 	// Do generic PHY initialisation
 	if (!radio_initialise()) {

@@ -3,15 +3,25 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**",
-                "/usr/share/sdcc/include"
+                "${workspaceFolder}/Firmware/radio/**",
+                "${workspaceFolder}/Firmware/include/**",
+                "/usr/share/sdcc/include/**"
             ],
             "defines": [
                 "__xdata=",
+                "__code=",
                 "__pdata=",
                 "__data=",
                 "__idata=",
-                "__bit=uint8_t"
+                "__bit=uint8_t",
+                "at(x)=",
+                "__at(x)=",
+                "__sbit=volatile bool",
+                "__interrupt(x)=",
+                "__nonbanked=",
+                "__sfr=volatile unsigned char",
+                "__sfr16=volatile unsigned int",
+                "BOARD_NAME="
             ],
             "compilerPath": "/usr/bin/sdcc",
             "cStandard": "gnu11",

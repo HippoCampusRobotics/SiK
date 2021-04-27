@@ -37,6 +37,7 @@
 #define _TDM_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "board.h"
 
 // Debug pins
@@ -79,36 +80,37 @@ SBIT (TDM_SYNC_PIN, SFR_P2, 1);
 #endif
 
 /// initialise tdm subsystem
-extern void tdm_init(void);
+void tdm_init(void);
 
 /// tdm main loop
-extern void tdm_serial_loop(void);
+void tdm_serial_loop(void);
 
 /// tdm sync state
-extern bool tdm_state_sync();
+bool tdm_state_sync();
 
 /// setup a 16 bit node count
-extern void tdm_set_node_count(__pdata uint16_t count);
+void tdm_set_node_count(__pdata uint16_t count);
 
 /// setup a 16 bit node destination
-extern void tdm_set_node_destination(__pdata uint16_t destination);
+void tdm_set_node_destination(__pdata uint16_t destination);
 
 /// setup if the node can sync from any
-extern void tdm_set_sync_any(__pdata uint8_t any);
+void tdm_set_sync_any(__pdata uint8_t any);
 
 /// report tdm timings
-extern void tdm_report_timing(void);
+void tdm_report_timing(void);
 
 /// dispatch a remote AT command
-extern void tdm_remote_at(__pdata uint16_t destination);
+void tdm_remote_at(__pdata uint16_t destination);
+
+void tdm_set_lbt_rssi(__pdata uint8_t lbt_rssi);
+
+void tdm_set_duty_cycle(__pdata uint8_t duty_cycle);
 
 /// show RSSI information
-extern void tdm_show_rssi(void);
+void tdm_show_rssi(void);
 
-/// the long term duty cycle we are aiming for
-extern __pdata uint8_t duty_cycle;
 
-/// the LBT threshold
-extern __pdata uint8_t lbt_rssi;
+
 
 #endif // _TDM_H_

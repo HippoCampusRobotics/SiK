@@ -37,9 +37,9 @@
 #include "packet.h"
 #include "timer.h"
 
-extern __xdata uint8_t pbuf[MAX_PACKET_LENGTH];
+extern __xdata uint8_t _pbuf[MAX_PACKET_LENGTH];
 extern uint8_t seen_mavlink;
-static __pdata uint8_t seqnum;
+static __pdata uint8_t _seqnum;
 
 // new RADIO_STATUS common message
 #define MAVLINK_MSG_ID_RADIO_STATUS 109
@@ -54,12 +54,12 @@ static __pdata uint8_t seqnum;
 #define RADIO_SOURCE_COMPONENT 'D'
 
 /*
- * Calculates the MAVLink checksum on a packet in pbuf[] 
+ * Calculates the MAVLink checksum on a packet in _pbuf[] 
  * and append it after the data
  */
 static void mavlink_crc(register uint8_t crc_extra)
 {
-	register uint8_t length = pbuf[1];
+	register uint8_t length = _pbuf[1];
 	__pdata uint16_t sum = 0xFFFF;
 	__pdata uint8_t i, stoplen;
 
@@ -68,20 +68,20 @@ static void mavlink_crc(register uint8_t crc_extra)
 	stoplen = length + offset;
 
 	// MAVLink 1.0/2.0 has an extra CRC seed
-	pbuf[length+offset] = crc_extra;
+	_pbuf[length+offset] = crc_extra;
 	stoplen++;
 
 	i = 1;
 	while (i<stoplen) {
 		register uint8_t tmp;
-		tmp = pbuf[i] ^ (uint8_t)(sum&0xff);
+		tmp = _pbuf[i] ^ (uint8_t)(sum&0xff);
 		tmp ^= (tmp<<4);
 		sum = (sum>>8) ^ (tmp<<8) ^ (tmp<<3) ^ (tmp>>4);
 		i++;
 	}
 
-	pbuf[length+offset] = sum&0xFF;
-	pbuf[length+offset+1] = sum>>8;
+	_pbuf[length+offset] = sum&0xFF;
+	_pbuf[length+offset+1] = sum>>8;
 }
 
 
@@ -147,41 +147,41 @@ bool MAVLink_report(void)
 
 	// MAVLink 1.0 encoding
 	if (seen_mavlink == 1) {
-		m = (struct mavlink_RADIO_v10 *)&pbuf[6];
-		pbuf[0] = MAVLINK10_STX;
-		pbuf[1] = sizeof(struct mavlink_RADIO_v10);
-		pbuf[2] = seqnum++;
-		pbuf[3] = RADIO_SOURCE_SYSTEM;
-		pbuf[4] = RADIO_SOURCE_COMPONENT;
-		pbuf[5] = MAVLINK_MSG_ID_RADIO_STATUS;
+		m = (struct mavlink_RADIO_v10 *)&_pbuf[6];
+		_pbuf[0] = MAVLINK10_STX;
+		_pbuf[1] = sizeof(struct mavlink_RADIO_v10);
+		_pbuf[2] = _seqnum++;
+		_pbuf[3] = RADIO_SOURCE_SYSTEM;
+		_pbuf[4] = RADIO_SOURCE_COMPONENT;
+		_pbuf[5] = MAVLINK_MSG_ID_RADIO_STATUS;
 
 	// MAVLink 2.0 encoding
 	} else {
-		m = (struct mavlink_RADIO_v10 *)&pbuf[10];
-		pbuf[0] = MAVLINK20_STX;
-		pbuf[1] = sizeof(struct mavlink_RADIO_v10);
-		pbuf[2] = 0;
-		pbuf[3] = 0;
-		pbuf[4] = seqnum++;
-		pbuf[5] = RADIO_SOURCE_SYSTEM;
-		pbuf[6] = RADIO_SOURCE_COMPONENT;
+		m = (struct mavlink_RADIO_v10 *)&_pbuf[10];
+		_pbuf[0] = MAVLINK20_STX;
+		_pbuf[1] = sizeof(struct mavlink_RADIO_v10);
+		_pbuf[2] = 0;
+		_pbuf[3] = 0;
+		_pbuf[4] = _seqnum++;
+		_pbuf[5] = RADIO_SOURCE_SYSTEM;
+		_pbuf[6] = RADIO_SOURCE_COMPONENT;
 
 		// If this is a protocol version request,
 		// respond accordingly
 		if (seen_mavlink == 3) {
-			pbuf[7] = MAVLINK_MSG_ID_PROTOCOL_VERSION & 0xFF;
-			pbuf[8] = (MAVLINK_MSG_ID_PROTOCOL_VERSION >> 8) & 0xFF;
+			_pbuf[7] = MAVLINK_MSG_ID_PROTOCOL_VERSION & 0xFF;
+			_pbuf[8] = (MAVLINK_MSG_ID_PROTOCOL_VERSION >> 8) & 0xFF;
 		} else {
-			pbuf[7] = MAVLINK_MSG_ID_RADIO_STATUS & 0xFF;
-			pbuf[8] = 0;
+			_pbuf[7] = MAVLINK_MSG_ID_RADIO_STATUS & 0xFF;
+			_pbuf[8] = 0;
 		}
 		// Never reaching the last 4 bit with any ID
-		pbuf[9] = 0;
+		_pbuf[9] = 0;
 	}
 
 	// PROTOCOL_VERSION
 	if (seen_mavlink == 3) {
-		struct mavlink_PROTOCOL_VERSION_v10 *v = (struct mavlink_PROTOCOL_VERSION_v10 *)&pbuf[10];
+		struct mavlink_PROTOCOL_VERSION_v10 *v = (struct mavlink_PROTOCOL_VERSION_v10 *)&_pbuf[10];
 		v->min_version = 1;
 		v->max_version = 2;
 		memset(&v->spec_version_hash[0], 0, 8);
@@ -200,7 +200,7 @@ bool MAVLink_report(void)
 		mavlink_crc(MAVLINK_RADIO_STATUS_CRC_EXTRA);
 	}
 
-	serial_write_buf(pbuf, full_packet_size);
+	serial_write_buf(_pbuf, full_packet_size);
 
 	return true;
 }
