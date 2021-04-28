@@ -13,7 +13,7 @@
                 "__pdata=",
                 "__data=",
                 "__idata=",
-                "__bit=uint8_t",
+                "__bit=bool",
                 "at(x)=",
                 "__at(x)=",
                 "__sbit=volatile bool",

@@ -48,6 +48,7 @@
 
 #define SYNC_BIT 0x8000
 #define IS_SYNC(x) (x & SYNC_BIT)
+#define IS_INVALID_SLOT(slot) (slot & 0x8000)
 /// removes the sync bit of the nodeid in the radio packet _trailer
 #define REMOVE_SYNC_BIT(x) (x & 0x7FFF)
 #define ADD_SYNC_BIT(x) (x | SYNC_BIT)
@@ -65,7 +66,7 @@
 enum _tdm_state { TDM_TRANSMIT, TDM_RECEIVE, TDM_SYNC };
 __pdata static enum _tdm_state _tdm_state;
 __pdata static uint16_t
-    _transmitting_node;  // sequence the nodes can transmit in.
+    _next_transmit_slot;  // sequence the nodes can transmit in.
 __pdata static uint16_t
     _paramNodeDestination;                 // User defined Packet destination
 __pdata static uint16_t _nodeDestination;  // Real Packet Destination (as some
@@ -77,8 +78,6 @@ __xdata uint8_t _pbuf[MAX_PACKET_LENGTH];
 /// how many 16usec ticks are remaining in the current state
 __pdata static uint16_t _tdm_state_remaining;
 
-/// This is enough to hold at least 3 packets and is based
-/// on the configured air data rate.
 __pdata static uint16_t _tx_window_width;
 __pdata static uint16_t _tx_sync_width;
 
@@ -97,9 +96,14 @@ static __bit _test_display_toggle;
 // records if the node so far has yielded to us,
 // as soon as a node doesn't yield we stop transmitting until our turn again
 __pdata static uint16_t _lastTransmitWindow;
-// if it's our transmitters turn, we have yielded and someone else has
-// transmitted
-static __bit _received_packet;
+
+/**
+ * @brief Flag to indicate if a packet was received in our transmission slot.
+ *
+ * If this flag is set we stop talking in our transmission slot, because we have
+ * yielded and another node wants to take our slot.
+ */
+static __bit _received_during_yielded_transmit;
 static __bit _yielded_slot;
 
 /// whether we have yielded our window to the other radio, or should send a
@@ -196,15 +200,15 @@ static __bit send_at_command;
 static __pdata uint16_t send_at_command_to;
 static __xdata char remote_at_cmd[AT_CMD_MAXLEN + 1];
 
-// local nodeCount
-__pdata static uint16_t nodeCount;
+// the transmission slots count is the number of nodes + 1 for the sync slot.
+__pdata static uint16_t _slot_count;
 
 /// display RSSI output
 void tdm_show_rssi(void) {
     // Using printfl helps a bit but still overloads the cpu when AT&T=RSSI is
     // used. This causes pauses and eventualy the nodes drift out of sync
     __pdata uint8_t i;
-    for (i = 0; i < (nodeCount - 1) && i < MAX_NODE_RSSI_STATS; i++) {
+    for (i = 0; i < (_slot_count - 1) && i < MAX_NODE_RSSI_STATS; i++) {
         if (i != nodeId) {
             printfl("[%u] L/R RSSI: %u/%u  L/R noise: %u/%u\n", (unsigned)i,
                     (unsigned)statistics[i].average_rssi,
@@ -240,6 +244,33 @@ static uint16_t flight_time_estimate(__pdata uint8_t packet_len) {
     return _packet_latency + (packet_len * _ticks_per_byte);
 }
 
+static void switch_to_next_slot() {
+    // __pdata uint16_t current_slot = _next_transmit_slot;
+    // _next_transmit_slot++;
+
+    if ((!IS_INVALID_SLOT(_next_transmit_slot) || nodeId == BASE_NODEID) &&
+        (_next_transmit_slot++ == nodeId)) {
+        /* with this slot transition it is our time to talk.
+         * only switch to transmit state if transmit is enabled or we are
+         * the base node. Transmit is disabled on boot and will be enabled
+         * as soon as we are able to sync with the base node or another node
+         * if anysync is enabled. */
+        _tdm_state == TDM_TRANSMIT;
+    } else if (_next_transmit_slot == _slot_count) {
+        /* the last transmission slot is the sync slot. Either we incremented
+         * _next_transmit_slot (that means we are either the base node or we are
+         * synced -> transmit is enabled). If we did not increment it, we are
+         * not the base node and are not synced yet and this if/else will result
+         * in TDM_RECEIVE. */
+        _tdm_state = TDM_SYNC;
+        _next_transmit_slot = BASE_NODEID;
+    } else {
+        /* if we are not in our transmission slot or in the sync slot it must be
+         * someone else's transmission slot -> our receive slots */
+        _tdm_state == TDM_RECEIVE;
+    }
+}
+
 /// update the TDM state machine
 ///
 static void tdm_state_update(__pdata uint16_t tdelta) {
@@ -257,21 +288,7 @@ static void tdm_state_update(__pdata uint16_t tdelta) {
         // Tickle Watchdog
         PCA0CPH5 = 0;
 #endif  // WATCH_DOG_ENABLE
-        if ((_transmitting_node < 0x8000 || nodeId == BASE_NODEID) &&
-            (_transmitting_node++ % nodeCount) == nodeId) {
-            _tdm_state = TDM_TRANSMIT;
-            _transmitting_node %= nodeCount;
-        }
-        // We need to -1 from _transmitting_node as it was incremented above
-        // Remember we have incremented nodeCount to allow for the sync period
-        else if (_transmitting_node < 0x8000 &&
-                 (_transmitting_node - 1 % nodeCount) == nodeCount - 1) {
-            _tdm_state = TDM_SYNC;
-        } else {
-            // Check for Bonus?
-            _tdm_state = TDM_RECEIVE;  // If there are other nodes yet to
-                                       // transmit lets hear them first
-        }
+        switch_to_next_slot();
 #ifdef DEBUG_PINS_SYNC
         if (_tdm_state == TDM_SYNC) {
             P0 |= 0x02;
@@ -340,22 +357,22 @@ static uint8_t tdm_yield_update(__pdata uint8_t set_yield,
     }
 
     if (_tdm_state != TDM_TRANSMIT) {
-        if (_received_packet) {
-            _received_packet = false;
+        if (_received_during_yielded_transmit) {
+            _received_during_yielded_transmit = false;
 #ifdef DEBUG_PINS_YIELD
             P2 &= ~0x40;
 #endif  // DEBUG_PINS_YIELD
         }
 
-        // REMEMBER nodeCount is set one higher than the user has set, this is
-        // to add sync to the sequence _transmitting_node points to the next
+        // REMEMBER _slot_count is set one higher than the user has set, this is
+        // to add sync to the sequence _next_transmit_slot points to the next
         // slot so we also have to remove one from here
         if (set_yield == YIELD_GET) {
-            if ((_transmitting_node != 0 &&
+            if ((_next_transmit_slot != BASE_NODEID &&
                  (_lastTransmitWindow & 0x7FFF) ==
-                     ((_transmitting_node - 1) % (nodeCount - 1))) ||
-                (_transmitting_node == 0 &&
-                 (_lastTransmitWindow & 0x7FFF) == (nodeCount - 2))) {
+                     ((_next_transmit_slot - 1) % (_slot_count - 1))) ||
+                (_next_transmit_slot == BASE_NODEID &&
+                 (_lastTransmitWindow & 0x7FFF) == (_slot_count - 2))) {
                 return YIELD_TRANSMIT;
             } else {
                 return YIELD_RECEIVE;
@@ -370,7 +387,7 @@ static uint8_t tdm_yield_update(__pdata uint8_t set_yield,
             // Make sure the node waits for a random amount of time..
             if (_lastTransmitWindow < 0x8000 &&
                 _trailer.nodeid ==
-                    ((_lastTransmitWindow + 1) % (nodeCount - 1))) {
+                    ((_lastTransmitWindow + 1) % (_slot_count - 1))) {
                 _lastTransmitWindow = _trailer.nodeid;
                 _transmit_wait = _packet_latency +
                                  ((uint16_t)rand()) % (_packet_latency * 2);
@@ -400,7 +417,7 @@ static uint8_t tdm_yield_update(__pdata uint8_t set_yield,
     } else if (_tdm_state == TDM_TRANSMIT) {  // We must be in Transmit Mode
         // If we have recived a packet during our Transmit window we have been
         // yielded..
-        if (_received_packet) {
+        if (_received_during_yielded_transmit) {
             _lastTransmitWindow = 0x8000;
             return YIELD_RECEIVE;
         }
@@ -479,7 +496,7 @@ static void link_update(void) {
         _sync_count = 0;
         RADIO_LED(_blink_state);
         _blink_state = !_blink_state;
-        _transmitting_node = 0xFFFF;
+        _next_transmit_slot = 0xFFFF;
 
         memset(remote_statistics, 0, sizeof(remote_statistics));
         memset(statistics, 0, sizeof(statistics));
@@ -578,22 +595,22 @@ static void handle_at_command(__pdata uint8_t len) {
 }
 
 static void handle_sync_packet() {
-    if (_transmitting_node == BASE_NODEID) {
+    if (_next_transmit_slot == BASE_NODEID) {
         if (!(++_sync_count)) {
             _sync_count = 0xFF;
         }
     }
-    _transmitting_node = BASE_NODEID;
+    _next_transmit_slot = BASE_NODEID;
     set_transmit_channel(REMOVE_SYNC_BIT(_trailer.nodeid));
     _received_sync = true;
 }
 
 static void handle_anysync_packet() {
-    if (_transmitting_node == _trailer.nodeid + 1) {
+    if (_next_transmit_slot == _trailer.nodeid + 1) {
         if (!(++_sync_count)) {
             _sync_count = 0xFF;
         }
-        _transmitting_node = _trailer.nodeid + 1;
+        _next_transmit_slot = _trailer.nodeid + 1;
         _received_sync = true;
     }
 }
@@ -647,7 +664,7 @@ static bool handle_received_packet(register uint8_t len) {
 
 #if USE_TICK_YIELD
     if (_tdm_state == TDM_TRANSMIT) {
-        _received_packet = true;
+        _received_during_yielded_transmit = true;
         _lastTransmitWindow = 0x8000;
 #ifdef DEBUG_PINS_YIELD
         P2 |= 0x40;
@@ -709,7 +726,7 @@ static inline uint8_t get_max_transmit() {
         return (_tdm_state_remaining - 2 * _packet_latency) / _ticks_per_byte;
 }
 
-static inline bool is_good_to_send(register uint8_t max_transmit) {
+static inline bool is_enough_time_to_transmit(register uint8_t max_transmit) {
     if (_duty_cycle_wait || _tdm_state_remaining < _packet_latency)
         return false;
     if (max_transmit < sizeof(_trailer) + 1) return false;
@@ -791,7 +808,7 @@ void tdm_serial_loop(void) {
         }
 
         if (tnow - last_hippolink_rssi_report > RSSI_REPORT_UPDATE_TICKS) {
-            if (hippolink_rssi_report(nodeId, nodeCount))
+            if (hippolink_rssi_report(nodeId, _slot_count))
                 last_hippolink_rssi_report = tnow;
         }
 
@@ -872,7 +889,7 @@ void tdm_serial_loop(void) {
             // Sometimes we may not recive a packet as it has been filtered by
             // the radio
             if (_tdm_state == TDM_TRANSMIT) {
-                _received_packet = true;
+                _received_during_yielded_transmit = true;
                 _lastTransmitWindow = 0x8000;
 #ifdef DEBUG_PINS_YIELD
                 P2 |= 0x40;
@@ -902,7 +919,7 @@ void tdm_serial_loop(void) {
             4;
 
         max_xmit = get_max_transmit();
-        if (!is_good_to_send) continue;
+        if (!is_enough_time_to_transmit(max_xmit)) continue;
 
         max_xmit -= sizeof(_trailer) + 1;
         if (max_xmit > _max_data_packet_length) {
@@ -937,7 +954,7 @@ void tdm_serial_loop(void) {
             max_xmit >=
                 (sizeof(statistics) + sizeof(_statistics_transmit_stats))
             // Do we need to send a stats packet
-            && _statistics_transmit_stats < (nodeCount - 1) &&
+            && _statistics_transmit_stats < (_slot_count - 1) &&
             nodeId < MAX_NODE_RSSI_STATS
             // Yeild at the start of our time period to allow better data
             // throughput
@@ -981,7 +998,7 @@ void tdm_serial_loop(void) {
 
         // if in sync mode and we are the base, add the channel and sync bit
         if (_tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
-            _trailer.nodeid = get_transmit_channel() | 0x8000;
+            _trailer.nodeid = get_transmit_channel() | SYNC_BIT;
         } else {
             _trailer.nodeid = nodeId;
         }
@@ -1075,7 +1092,7 @@ bool tdm_state_sync() { return _received_sync; }
 // setup a 16 bit node count
 //
 void tdm_set_node_count(__pdata uint16_t count) {
-    nodeCount = count + 1;  // add 1 for the sync channel
+    _slot_count = count + 1;  // add 1 for the sync channel
 }
 
 // setup a 16 bit node destination
@@ -1181,7 +1198,7 @@ void tdm_init(void) {
 
     // Clear Values..
     _trailer.nodeid = 0xFFFF;
-    _transmitting_node = 0xFFFF;
+    _next_transmit_slot = 0xFFFF;
     memset(remote_statistics, 0, sizeof(remote_statistics));
     memset(statistics, 0, sizeof(statistics));
 
@@ -1196,7 +1213,7 @@ void tdm_init(void) {
     RADIO_LED(LED_OFF);
 
 #if USE_TICK_YIELD
-    _received_packet = false;
+    _received_during_yielded_transmit = false;
 #ifdef DEBUG_PINS_YIELD
     P2 &= ~0x40;
 #endif  // DEBUG_PINS_YIELD
